@@ -23,6 +23,14 @@ const (
 	ProfileClient Profile = "client"
 )
 
+// Grant types a client may be registered for.
+const (
+	GrantTypeAuthorizationCode = "authorization_code"
+	// GrantTypeTokenExchange lets a mobile app sign in through OpenID Connect Native SSO by
+	// exchanging another app's ID token and device secret.
+	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+)
+
 // ValidationError carries a documented eSignet client-mgmt error code.
 type ValidationError struct {
 	Code    string

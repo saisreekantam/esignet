@@ -37,6 +37,9 @@ const (
 	defaultDesignCacheTTLSecs    = 86400
 	defaultFlowCacheTTLSecs      = 86400
 
+	defaultDeviceSecretValiditySecs = 24 * 60 * 60
+	defaultNativeSSOEncryptionRefID = "NATIVE_SSO"
+
 	// defaultAuthTransactionIDLength is the fixed length MOSIP IDA/mock-identity-system
 	// require for a transaction id, used when neither deployment.yaml nor
 	// MOSIP_ESIGNET_AUTH_TRANSACTION_ID_LENGTH sets one.
@@ -118,7 +121,30 @@ type AppConfig struct {
 	SupportedSigningAlgorithms []string                         `yaml:"supported_signing_algorithms"`
 	SupportedEncAlgorithms     []string                         `yaml:"supported_enc_algorithms"`
 	AllowedOriginRegex         string                           `yaml:"allowed_origin_regex"`
+	NativeSSO                  NativeSSOConfig                  `yaml:"native_sso"`
 	PProfConfig                PProfConfig                      `yaml:"-"`
+}
+
+// Native SSO device secret redemption policies.
+const (
+	// NativeSSORedeemOncePerClient lets each app redeem a given device secret once, so a captured
+	// device secret and ID token cannot be replayed by the same app.
+	NativeSSORedeemOncePerClient = "once_per_client"
+	// NativeSSORedeemReusable lets an app redeem a device secret for as long as it is valid.
+	NativeSSORedeemReusable = "reusable"
+)
+
+// NativeSSOConfig configures OpenID Connect Native SSO for Mobile Apps 1.0.
+type NativeSSOConfig struct {
+	// Enabled turns on the device_sso scope and the device-secret token exchange.
+	Enabled bool `yaml:"enabled"`
+	// DeviceSecretValiditySecs bounds the SSO session a device secret represents.
+	DeviceSecretValiditySecs int `yaml:"device_secret_validity_secs"`
+	// EncryptionReferenceID is the keymanager reference id of the key device secrets are
+	// encrypted with (a Component Encryption Key under the OIDC service application id).
+	EncryptionReferenceID string `yaml:"encryption_reference_id"`
+	// RedemptionPolicy is NativeSSORedeemOncePerClient or NativeSSORedeemReusable.
+	RedemptionPolicy string `yaml:"redemption_policy"`
 }
 
 // PProfConfig defines application pprof configuration
@@ -333,6 +359,7 @@ func applyDefaults(cfg *AppConfig) {
 		cfg.SupportedEncAlgorithms = []string{"RSA-OAEP", "RSA-OAEP-256"}
 	}
 	cfg.AllowedOriginRegex = envOrConfigOrDefault("MOSIP_ESIGNET_CORS_ALLOWED_ORIGIN_REGEX", cfg.AllowedOriginRegex, "")
+	applyNativeSSODefaults(&cfg.NativeSSO)
 
 	cfg.Server.Port = cfg.Port
 	cfg.Server.Identifier = cfg.Identifier
@@ -761,5 +788,18 @@ func envBoolOrConfig(key string, fromYAML bool) bool {
 			"ignoring unrecognized boolean env var; keeping configured value",
 			applog.String("key", key), applog.String("value", raw))
 		return fromYAML
+	}
+}
+
+func applyNativeSSODefaults(c *NativeSSOConfig) {
+	c.Enabled = envBoolOrConfig("MOSIP_ESIGNET_NATIVE_SSO_ENABLED", c.Enabled)
+	c.DeviceSecretValiditySecs = envIntOrConfigOrDefault("MOSIP_ESIGNET_NATIVE_SSO_DEVICE_SECRET_VALIDITY_SECS",
+		c.DeviceSecretValiditySecs, defaultDeviceSecretValiditySecs)
+	c.EncryptionReferenceID = envOrConfigOrDefault("MOSIP_ESIGNET_NATIVE_SSO_ENCRYPTION_REF_ID",
+		c.EncryptionReferenceID, defaultNativeSSOEncryptionRefID)
+	c.RedemptionPolicy = envOrConfigOrDefault("MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY",
+		c.RedemptionPolicy, NativeSSORedeemOncePerClient)
+	if c.RedemptionPolicy != NativeSSORedeemReusable {
+		c.RedemptionPolicy = NativeSSORedeemOncePerClient
 	}
 }

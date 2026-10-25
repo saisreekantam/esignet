@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/common"
@@ -82,7 +83,7 @@ func (p *actorProvider) GetOAuthClientByClientID(
 		ID:                      client.ClientID,
 		OUID:                    client.RpID,
 		ClientID:                client.ClientID,
-		GrantTypes:              []providers.GrantType{providers.GrantTypeAuthorizationCode},
+		GrantTypes:              getGrantTypes(client.GrantTypes),
 		RedirectURIs:            client.RedirectURIs,
 		ResponseTypes:           []providers.ResponseType{providers.ResponseTypeCode},
 		TokenEndpointAuthMethod: providers.TokenEndpointAuthMethodPrivateKeyJWT,
@@ -273,6 +274,16 @@ func extractJWKs(jwk string) []json.RawMessage {
 }
 
 // getAllowedScopes combines both OIDC scopes and authorization scopes
+// getGrantTypes returns the grant types the engine allows for a client: authorization_code always,
+// plus token exchange (Native SSO) when the client is registered for it.
+func getGrantTypes(registered []string) []providers.GrantType {
+	grantTypes := []providers.GrantType{providers.GrantTypeAuthorizationCode}
+	if slices.Contains(registered, clientmgmt.GrantTypeTokenExchange) {
+		grantTypes = append(grantTypes, providers.GrantTypeTokenExchange)
+	}
+	return grantTypes
+}
+
 func getAllowedScopes(standardScopeClaims map[string][]string, additionalConfig map[string]any) []string {
 	scopes := make([]string, 0, len(standardScopeClaims))
 	for k := range standardScopeClaims {

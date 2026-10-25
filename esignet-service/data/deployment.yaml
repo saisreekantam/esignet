@@ -133,7 +133,7 @@ oauth:
     allowed_algs: ["ES256", "PS256", "ES384", "ES512", "EdDSA", "RS256"]
     max_jti_length: 256
   allowed_subject_types: ["pairwise"]
-  allowed_grant_types: ["authorization_code"]
+  allowed_grant_types: ["authorization_code", "urn:ietf:params:oauth:grant-type:token-exchange"]
   allowed_response_types: ["code"]
   allowed_auth_methods: ["private_key_jwt"]
   allowed_scopes: ["openid","profile","email","phone"]
@@ -204,6 +204,16 @@ scope_claims:
     - phone_number_verified
   address:
     - address
+
+# OpenID Connect Native SSO for Mobile Apps 1.0. A client opts in by listing device_sso in its
+# additional_config.allowed_authorization_scopes; apps of the same relying party it lists in
+# additional_config.native_sso_allowed_client_ids can then sign in with its device secret through
+# the token-exchange grant (they must be registered for that grant type).
+native_sso:
+  enabled: true                       # override via MOSIP_ESIGNET_NATIVE_SSO_ENABLED
+  device_secret_validity_secs: 86400  # override via MOSIP_ESIGNET_NATIVE_SSO_DEVICE_SECRET_VALIDITY_SECS
+  encryption_reference_id: NATIVE_SSO # override via MOSIP_ESIGNET_NATIVE_SSO_ENCRYPTION_REF_ID
+  redemption_policy: once_per_client  # once_per_client | reusable; MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY
 
 # resource_servers declares the resource server(s) this deployment issues access tokens for.
 # identifier is the RFC 8707 `resource` request-parameter value and the token's `aud` claim.

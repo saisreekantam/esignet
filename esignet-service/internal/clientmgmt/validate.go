@@ -421,7 +421,7 @@ func validateGrantTypes(grants []string, minItems, maxItems int) error {
 		return validationErr("invalid_grant_type")
 	}
 	for _, g := range grants {
-		if g != "authorization_code" {
+		if g != GrantTypeAuthorizationCode && g != GrantTypeTokenExchange {
 			return validationErr("invalid_grant_type")
 		}
 	}
@@ -492,6 +492,7 @@ var allowedAdditionalConfigKeys = map[string]struct{}{
 	"require_pkce":                          {},
 	"purpose":                               {},
 	"allowed_authorization_scopes":          {},
+	"native_sso_allowed_client_ids":         {},
 }
 
 func validateAdditionalConfig(raw json.RawMessage) error {
@@ -535,17 +536,19 @@ func validateAdditionalConfig(raw json.RawMessage) error {
 			return err
 		}
 	}
-	if v, ok := cfg["allowed_authorization_scopes"]; ok {
-		if err := validateAllowedAuthorizationScopes(v); err != nil {
-			return err
+	for _, key := range []string{"allowed_authorization_scopes", "native_sso_allowed_client_ids"} {
+		if v, ok := cfg[key]; ok {
+			if err := validateUniqueNonBlankStrings(v); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// validateAllowedAuthorizationScopes validates the allowed_authorization_scopes
-// additional_config value: an array of unique, non-blank scope names.
-func validateAllowedAuthorizationScopes(raw json.RawMessage) error {
+// validateUniqueNonBlankStrings validates an additional_config list value (allowed_authorization_scopes,
+// native_sso_allowed_client_ids): an array of unique, non-blank strings.
+func validateUniqueNonBlankStrings(raw json.RawMessage) error {
 	var scopes []string
 	if err := json.Unmarshal(raw, &scopes); err != nil {
 		return validationErr("invalid_additional_config")
