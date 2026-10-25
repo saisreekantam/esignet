@@ -60,6 +60,25 @@ The PAR request generates a fresh DPoP key pair (`dpop_*` variables) and reuses 
 
 For the OTP/password branches, the server's `MOSIP_ESIGNET_AUTHN_PROVIDER` must match how the identity was seeded: `mock` (the `.env.example` default) if you seeded it with **User Mgmt → Mock → Create User**, or `mosip` with MOSIP variables configured (see `esignet-service/.env.example`) if you're testing against a real MOSIP identity system — the `mosip` provider does not use the mock identity service, so an identity seeded via User Mgmt won't authenticate against it.
 
+### Native SSO
+
+OpenID Connect Native SSO for Mobile Apps 1.0 (see [docs/native-sso.md](../docs/native-sso.md)). The Super App is the client created by **Create client**. The Child App is a second client of the same relying party, registered for the token-exchange grant.
+
+1. Run **Client Management → Create client** and **User Mgmt → Mock → Create User**.
+2. Run **Native SSO → Create Child App client**, then **Enable device_sso on the Super App client**. The second request also sets `scope` to `openid profile email device_sso`.
+3. Run the **FAPI2.0 flow** folder (OTP branch). **Exchange Code for Token** stores `id_token` and `device_secret`.
+4. Run the rest of the **Native SSO** folder in order:
+
+| Request | Expected |
+|---|---|
+| Child App token exchange (silent SSO) | 200, DPoP-bound access token for the Child App |
+| Child App userinfo | 200, only the claims the user consented to |
+| Replay the device secret | 400 `invalid_grant` |
+| Native SSO logout (all apps) | 200 `logged_out` |
+| Child App userinfo after logout | 401: the issued token is cut off |
+
+The Child App's DPoP proofs are signed with the Super App's key from **Initiate PAR** (key A). This is what the Super App's bound service does on a device.
+
 ### Sunbird Registry
 
 CRUD against the Sunbird registry (Insurance schema) used by the FAPI2.0 flow's Sunbird KBI branch: `Create Policy (Identity)` → `Get Policy` → `Search Policy` → `Delete Policy`.

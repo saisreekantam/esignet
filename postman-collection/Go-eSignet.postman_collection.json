@@ -1335,7 +1335,8 @@
                   "const t = pm.response.json();",
                   "pm.test('access_token', () => pm.expect(t.access_token).to.be.a('string').and.not.empty);",
                   "pm.environment.set('access_token', t.access_token);",
-                  "if (t.id_token) pm.environment.set('id_token', t.id_token);"
+                  "if (t.id_token) pm.environment.set('id_token', t.id_token);",
+                  "if (t.device_secret) pm.environment.set('device_secret', t.device_secret); // Native SSO"
                 ],
                 "type": "text/javascript",
                 "packages": {},
@@ -1580,6 +1581,591 @@
       "auth": {
         "type": "noauth"
       }
+    },
+    {
+      "name": "Native SSO",
+      "item": [
+        {
+          "name": "Create Child App client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Generates the Child App's RSA key and client id (same relying party as the Super App).",
+                  "function b64url(bytes) {",
+                  "  const v = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);",
+                  "  return btoa(String.fromCharCode(...v)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');",
+                  "}",
+                  "pm.environment.set('child_client_id', 'postman-child-' + Date.now());",
+                  "pm.environment.set('client_mgmt_request_time', new Date().toISOString());",
+                  "return crypto.subtle.generateKey(",
+                  "  { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },",
+                  "  true, ['sign', 'verify']",
+                  ").then((pair) => crypto.subtle.exportKey('jwk', pair.privateKey)).then((jwk) =>",
+                  "  crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ e: jwk.e, kty: jwk.kty, n: jwk.n }))).then((thumb) => {",
+                  "    const kid = b64url(new Uint8Array(thumb));",
+                  "    pm.environment.set('child_client_private_key', JSON.stringify({ kty: jwk.kty, n: jwk.n, e: jwk.e, d: jwk.d,",
+                  "      p: jwk.p, q: jwk.q, dp: jwk.dp, dq: jwk.dq, qi: jwk.qi, kid: kid, use: 'sig' }));",
+                  "    pm.environment.set('child_client_public_key', JSON.stringify({ kty: jwk.kty, n: jwk.n, e: jwk.e, kid: kid, use: 'sig' }));",
+                  "  })",
+                  ");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('child client ACTIVE', () => pm.expect(pm.response.json().response.status).to.eql('ACTIVE'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{client_mgmt_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/client-mgmt/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "client-mgmt",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestTime\": \"{{client_mgmt_request_time}}\",\n  \"request\": {\n    \"clientId\": \"{{child_client_id}}\",\n    \"clientName\": \"Postman Child App\",\n    \"clientNameLangMap\": { \"eng\": \"Postman Child App\" },\n    \"relyingPartyId\": \"{{relying_party_id}}\",\n    \"logoUri\": \"https://example.com/logo.png\",\n    \"redirectUris\": [\"{{redirect_uri}}\"],\n    \"userClaims\": [\"name\", \"email\", \"picture\", \"phone_number\", \"address\"],\n    \"authContextRefs\": [\"mosip:idp:acr:generated-code\"],\n    \"publicKey\": {{child_client_public_key}},\n    \"grantTypes\": [\"authorization_code\", \"urn:ietf:params:oauth:grant-type:token-exchange\"],\n    \"clientAuthMethods\": [\"private_key_jwt\"],\n    \"additionalConfig\": { \"require_pushed_authorization_requests\": true, \"dpop_bound_access_tokens\": true, \"require_pkce\": true }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Enable device_sso on the Super App client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('client_mgmt_request_time', new Date().toISOString());",
+                  "// The FAPI2.0 flow that follows must request device_sso.",
+                  "pm.environment.set('scope', 'openid profile email device_sso');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('patched', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{client_mgmt_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/client-mgmt/client/{{client_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "client-mgmt",
+                "client",
+                "{{client_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestTime\": \"{{client_mgmt_request_time}}\",\n  \"request\": {\n    \"additionalConfig\": {\n      \"require_pushed_authorization_requests\": true,\n      \"dpop_bound_access_tokens\": true,\n      \"require_pkce\": true,\n      \"allowed_authorization_scopes\": [\"device_sso\"],\n      \"native_sso_allowed_client_ids\": [\"{{child_client_id}}\"]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Child App token exchange (silent SSO)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function b64url(bytes) {",
+                  "  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);",
+                  "  let s = ''; for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);",
+                  "  return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "}",
+                  "function b64urlStr(str) { return b64url(new TextEncoder().encode(str)); }",
+                  "async function sha256b64url(input) {",
+                  "  const data = typeof input === 'string' ? new TextEncoder().encode(input) : input;",
+                  "  return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', data)));",
+                  "}",
+                  "// DPoP proof signed with the Super App's device key (key A, generated by \"Initiate PAR\").",
+                  "async function dpopProof(htm, htu, accessToken) {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('dpop_private_key'));",
+                  "  const publicJwk = JSON.parse(pm.environment.get('dpop_public_key'));",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const header = { typ: 'dpop+jwt', alg: 'PS256', jwk: { e: publicJwk.e, kty: publicJwk.kty, n: publicJwk.n } };",
+                  "  const payload = { jti: crypto.randomUUID(), htm, htu, iat: Math.floor(Date.now() / 1000) };",
+                  "  if (accessToken) payload.ath = await sha256b64url(accessToken);",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "// private_key_jwt for the Child App; FAPI 2.0 requires aud = issuer.",
+                  "async function childAssertion() {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('child_client_private_key'));",
+                  "  const clientId = pm.environment.get('child_client_id');",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const now = Math.floor(Date.now() / 1000);",
+                  "  const header = { alg: 'PS256', typ: 'JWT', kid: privateJwk.kid };",
+                  "  const payload = { iss: clientId, sub: clientId, aud: pm.environment.get('baseUrl'), jti: crypto.randomUUID(), iat: now, exp: now + 60 };",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "if (!pm.environment.get('device_secret')) throw new Error('Run the FAPI2.0 flow with scope \"openid profile email device_sso\" first.');",
+                  "pm.collectionVariables.set('child_client_assertion', await childAssertion());",
+                  "pm.request.headers.upsert({ key: 'DPoP', value: await dpopProof('POST', `${pm.environment.get('baseUrl')}/oauth2/token`) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exchange 200', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json();",
+                  "pm.test('DPoP-bound access token', () => pm.expect(t.token_type).to.eql('DPoP'));",
+                  "pm.test('issued_token_type is access_token', () => pm.expect(t.issued_token_type).to.eql('urn:ietf:params:oauth:token-type:access_token'));",
+                  "pm.environment.set('child_access_token', t.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/token",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "token"
+              ]
+            },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:token-exchange",
+                  "type": "text"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{child_client_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "subject_token",
+                  "value": "{{id_token}}",
+                  "type": "text"
+                },
+                {
+                  "key": "subject_token_type",
+                  "value": "urn:ietf:params:oauth:token-type:id_token",
+                  "type": "text"
+                },
+                {
+                  "key": "actor_token",
+                  "value": "{{device_secret}}",
+                  "type": "text"
+                },
+                {
+                  "key": "actor_token_type",
+                  "value": "urn:openid:params:token-type:device-secret",
+                  "type": "text"
+                },
+                {
+                  "key": "scope",
+                  "value": "openid profile",
+                  "type": "text"
+                },
+                {
+                  "key": "client_assertion_type",
+                  "value": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                  "type": "text"
+                },
+                {
+                  "key": "client_assertion",
+                  "value": "{{child_client_assertion}}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Child App userinfo",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function b64url(bytes) {",
+                  "  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);",
+                  "  let s = ''; for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);",
+                  "  return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "}",
+                  "function b64urlStr(str) { return b64url(new TextEncoder().encode(str)); }",
+                  "async function sha256b64url(input) {",
+                  "  const data = typeof input === 'string' ? new TextEncoder().encode(input) : input;",
+                  "  return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', data)));",
+                  "}",
+                  "// DPoP proof signed with the Super App's device key (key A, generated by \"Initiate PAR\").",
+                  "async function dpopProof(htm, htu, accessToken) {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('dpop_private_key'));",
+                  "  const publicJwk = JSON.parse(pm.environment.get('dpop_public_key'));",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const header = { typ: 'dpop+jwt', alg: 'PS256', jwk: { e: publicJwk.e, kty: publicJwk.kty, n: publicJwk.n } };",
+                  "  const payload = { jti: crypto.randomUUID(), htm, htu, iat: Math.floor(Date.now() / 1000) };",
+                  "  if (accessToken) payload.ath = await sha256b64url(accessToken);",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "// private_key_jwt for the Child App; FAPI 2.0 requires aud = issuer.",
+                  "async function childAssertion() {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('child_client_private_key'));",
+                  "  const clientId = pm.environment.get('child_client_id');",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const now = Math.floor(Date.now() / 1000);",
+                  "  const header = { alg: 'PS256', typ: 'JWT', kid: privateJwk.kid };",
+                  "  const payload = { iss: clientId, sub: clientId, aud: pm.environment.get('baseUrl'), jti: crypto.randomUUID(), iat: now, exp: now + 60 };",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "const token = pm.environment.get('child_access_token');",
+                  "pm.request.headers.upsert({ key: 'DPoP', value: await dpopProof('GET', `${pm.environment.get('baseUrl')}/oauth2/userinfo`, token) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('userinfo 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "DPoP {{child_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/userinfo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "userinfo"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Replay the device secret (expect invalid_grant)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function b64url(bytes) {",
+                  "  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);",
+                  "  let s = ''; for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);",
+                  "  return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "}",
+                  "function b64urlStr(str) { return b64url(new TextEncoder().encode(str)); }",
+                  "async function sha256b64url(input) {",
+                  "  const data = typeof input === 'string' ? new TextEncoder().encode(input) : input;",
+                  "  return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', data)));",
+                  "}",
+                  "// DPoP proof signed with the Super App's device key (key A, generated by \"Initiate PAR\").",
+                  "async function dpopProof(htm, htu, accessToken) {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('dpop_private_key'));",
+                  "  const publicJwk = JSON.parse(pm.environment.get('dpop_public_key'));",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const header = { typ: 'dpop+jwt', alg: 'PS256', jwk: { e: publicJwk.e, kty: publicJwk.kty, n: publicJwk.n } };",
+                  "  const payload = { jti: crypto.randomUUID(), htm, htu, iat: Math.floor(Date.now() / 1000) };",
+                  "  if (accessToken) payload.ath = await sha256b64url(accessToken);",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "// private_key_jwt for the Child App; FAPI 2.0 requires aud = issuer.",
+                  "async function childAssertion() {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('child_client_private_key'));",
+                  "  const clientId = pm.environment.get('child_client_id');",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const now = Math.floor(Date.now() / 1000);",
+                  "  const header = { alg: 'PS256', typ: 'JWT', kid: privateJwk.kid };",
+                  "  const payload = { iss: clientId, sub: clientId, aud: pm.environment.get('baseUrl'), jti: crypto.randomUUID(), iat: now, exp: now + 60 };",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "if (!pm.environment.get('device_secret')) throw new Error('Run the FAPI2.0 flow with scope \"openid profile email device_sso\" first.');",
+                  "pm.collectionVariables.set('child_client_assertion', await childAssertion());",
+                  "pm.request.headers.upsert({ key: 'DPoP', value: await dpopProof('POST', `${pm.environment.get('baseUrl')}/oauth2/token`) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('replay rejected', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error).to.eql('invalid_grant'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/token",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "token"
+              ]
+            },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "grant_type",
+                  "value": "urn:ietf:params:oauth:grant-type:token-exchange",
+                  "type": "text"
+                },
+                {
+                  "key": "client_id",
+                  "value": "{{child_client_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "subject_token",
+                  "value": "{{id_token}}",
+                  "type": "text"
+                },
+                {
+                  "key": "subject_token_type",
+                  "value": "urn:ietf:params:oauth:token-type:id_token",
+                  "type": "text"
+                },
+                {
+                  "key": "actor_token",
+                  "value": "{{device_secret}}",
+                  "type": "text"
+                },
+                {
+                  "key": "actor_token_type",
+                  "value": "urn:openid:params:token-type:device-secret",
+                  "type": "text"
+                },
+                {
+                  "key": "scope",
+                  "value": "openid profile",
+                  "type": "text"
+                },
+                {
+                  "key": "client_assertion_type",
+                  "value": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                  "type": "text"
+                },
+                {
+                  "key": "client_assertion",
+                  "value": "{{child_client_assertion}}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Native SSO logout (all apps)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('logged out', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('logged_out'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/native-sso/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "native-sso",
+                "logout"
+              ]
+            },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "device_secret",
+                  "value": "{{device_secret}}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Child App userinfo after logout (expect 401)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function b64url(bytes) {",
+                  "  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);",
+                  "  let s = ''; for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);",
+                  "  return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "}",
+                  "function b64urlStr(str) { return b64url(new TextEncoder().encode(str)); }",
+                  "async function sha256b64url(input) {",
+                  "  const data = typeof input === 'string' ? new TextEncoder().encode(input) : input;",
+                  "  return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', data)));",
+                  "}",
+                  "// DPoP proof signed with the Super App's device key (key A, generated by \"Initiate PAR\").",
+                  "async function dpopProof(htm, htu, accessToken) {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('dpop_private_key'));",
+                  "  const publicJwk = JSON.parse(pm.environment.get('dpop_public_key'));",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const header = { typ: 'dpop+jwt', alg: 'PS256', jwk: { e: publicJwk.e, kty: publicJwk.kty, n: publicJwk.n } };",
+                  "  const payload = { jti: crypto.randomUUID(), htm, htu, iat: Math.floor(Date.now() / 1000) };",
+                  "  if (accessToken) payload.ath = await sha256b64url(accessToken);",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "// private_key_jwt for the Child App; FAPI 2.0 requires aud = issuer.",
+                  "async function childAssertion() {",
+                  "  const privateJwk = JSON.parse(pm.environment.get('child_client_private_key'));",
+                  "  const clientId = pm.environment.get('child_client_id');",
+                  "  const key = await crypto.subtle.importKey('jwk', privateJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']);",
+                  "  const now = Math.floor(Date.now() / 1000);",
+                  "  const header = { alg: 'PS256', typ: 'JWT', kid: privateJwk.kid };",
+                  "  const payload = { iss: clientId, sub: clientId, aud: pm.environment.get('baseUrl'), jti: crypto.randomUUID(), iat: now, exp: now + 60 };",
+                  "  const input = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(payload))}`;",
+                  "  const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, new TextEncoder().encode(input));",
+                  "  return `${input}.${b64url(new Uint8Array(sig))}`;",
+                  "}",
+                  "const token = pm.environment.get('child_access_token');",
+                  "pm.request.headers.upsert({ key: 'DPoP', value: await dpopProof('GET', `${pm.environment.get('baseUrl')}/oauth2/userinfo`, token) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('token cut off by logout', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "DPoP {{child_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/oauth2/userinfo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "oauth2",
+                "userinfo"
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "description": "OpenID Connect Native SSO for Mobile Apps 1.0 (see docs/native-sso.md).\n\n1. Run Client Management > Create client (the Super App) and User Mgmt > Create User.\n2. Run Create Child App client, then Enable device_sso on the Super App client (it also sets scope to include device_sso).\n3. Run the FAPI2.0 flow folder; Exchange Code for Token now stores device_secret and id_token.\n4. Run the remaining requests here in order. DPoP proofs are signed with the Super App's key from Initiate PAR (key A)."
     },
     {
       "name": "Sunbird Registry",
@@ -1835,6 +2421,11 @@
     },
     {
       "key": "introspect_client_assertion",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "child_client_assertion",
       "value": "",
       "type": "string"
     }
