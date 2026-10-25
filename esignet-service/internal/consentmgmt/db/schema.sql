@@ -35,6 +35,7 @@ CREATE TABLE consent_history (
 	hash                 VARCHAR(100),
 	accepted_claims      VARCHAR(1024),
 	permitted_scopes     VARCHAR(1024),
+	reused_from_client_id VARCHAR(256),
 	PRIMARY KEY (id)
 );
 

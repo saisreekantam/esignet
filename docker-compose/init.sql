@@ -68,6 +68,7 @@ create table esignet.consent_history (
     hash VARCHAR(1024),
     accepted_claims VARCHAR(1024),
     permitted_scopes VARCHAR(1024),
+    reused_from_client_id VARCHAR(256),
     PRIMARY KEY (id)
 );
 CREATE INDEX idx_consent_history_psu_client ON esignet.consent_history(psu_token, client_id);

@@ -35,4 +35,5 @@ type ConsentHistory struct {
 	Hash                sql.NullString `db:"hash" json:"hash"`
 	AcceptedClaims      sql.NullString `db:"accepted_claims" json:"accepted_claims"`
 	PermittedScopes     sql.NullString `db:"permitted_scopes" json:"permitted_scopes"`
+	ReusedFromClientID  sql.NullString `db:"reused_from_client_id" json:"reused_from_client_id"`
 }

@@ -25,6 +25,7 @@ CREATE TABLE consent_history (
     hash VARCHAR(100),
     accepted_claims VARCHAR(1024),
     permitted_scopes VARCHAR(1024),
+    reused_from_client_id VARCHAR(256),
     PRIMARY KEY (id)
 );
 
@@ -42,4 +43,5 @@ CREATE INDEX idx_consent_history_psu_client ON consent_history(psu_token, client
 -- COMMENT ON COLUMN consent_history.hash IS 'hash of consent object';
 -- COMMENT ON COLUMN consent_history.accepted_claims IS 'Accepted Claims by the user';
 -- COMMENT ON COLUMN consent_history.permitted_scopes IS 'Accepted Scopes by the user';
+-- COMMENT ON COLUMN consent_history.reused_from_client_id IS 'Client whose consent was reused through Native SSO, null for consent given by the user';
 

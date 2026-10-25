@@ -67,9 +67,10 @@ INSERT INTO consent_history (
 	accepted_claims,
 	permitted_scopes,
 	cr_dtimes,
-	expire_dtimes
+	expire_dtimes,
+	reused_from_client_id
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
 `
 
@@ -84,6 +85,7 @@ type InsertConsentHistoryParams struct {
 	PermittedScopes     sql.NullString `db:"permitted_scopes" json:"permitted_scopes"`
 	CrDtimes            time.Time      `db:"cr_dtimes" json:"cr_dtimes"`
 	ExpireDtimes        sql.NullTime   `db:"expire_dtimes" json:"expire_dtimes"`
+	ReusedFromClientID  sql.NullString `db:"reused_from_client_id" json:"reused_from_client_id"`
 }
 
 func (q *Queries) InsertConsentHistory(ctx context.Context, arg InsertConsentHistoryParams) error {
@@ -98,6 +100,7 @@ func (q *Queries) InsertConsentHistory(ctx context.Context, arg InsertConsentHis
 		arg.PermittedScopes,
 		arg.CrDtimes,
 		arg.ExpireDtimes,
+		arg.ReusedFromClientID,
 	)
 	return err
 }
