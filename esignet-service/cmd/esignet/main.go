@@ -40,6 +40,7 @@ import (
 	"github.com/mosip/esignet/internal/keymanager/signature"
 	applog "github.com/mosip/esignet/internal/log"
 	"github.com/mosip/esignet/internal/metrics"
+	"github.com/mosip/esignet/internal/nativesso"
 	"github.com/mosip/esignet/internal/security"
 )
 
@@ -147,6 +148,14 @@ func main() {
 
 	resourceProvider := engine.NewResourceProvider(appCfg)
 
+	// OpenID Connect Native SSO for Mobile Apps 1.0; both providers are nil when it is disabled.
+	deviceSecretProvider := engine.NewDeviceSecretProvider(appCfg, sigSvc, cryptoSvc, clientSvc, runtimeStore)
+	nativeSSOConsentProvider := engine.NewNativeSSOConsentProvider(consentmgmt.NewService(pgConn), clientSvc, appCfg)
+	if sessions, ok := deviceSecretProvider.(nativesso.SessionEnder); ok {
+		nativesso.NewHandler(sessions, logger).RegisterRoutes(mux)
+		logger.Info(context.Background(), "native sso enabled")
+	}
+
 	_ = thunderidengine.New(mux,
 		thunderidengine.WithLogConfig(engineconfig.LogConfig{Level: logLevel, Format: "json"}),
 		thunderidengine.WithServerHome(appCfg.DataDir),
@@ -175,6 +184,8 @@ func main() {
 		thunderidengine.WithCaptchaValidationProvider(engine.NewCaptchaProvider(&appCfg.CaptchaConfig, commonHTTPClient)),
 		thunderidengine.WithRuntimeCryptoProvider(engine.NewRuntimeCryptoProvider(appCfg, keyMgrSvc, sigSvc, cryptoSvc, authnProvider)),
 		thunderidengine.WithOriginConfig(originConfig),
+		thunderidengine.WithDeviceSecretProvider(deviceSecretProvider),
+		thunderidengine.WithNativeSSOConsentProvider(nativeSSOConsentProvider),
 	)
 
 	addr := fmt.Sprintf(":%d", appCfg.Port)
