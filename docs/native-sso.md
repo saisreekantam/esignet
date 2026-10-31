@@ -48,7 +48,7 @@ sequenceDiagram
     T->>T: DPoP jkt == device_secret cnf.jkt; ds_hash matches; sid, sub and aud match
     T->>T: original client still allowed device_sso; scopes are a subset (strict); no device_sso
     T->>P: ResolveNativeSSOConsent (no side effects)
-    T->>D: MarkDeviceSecretUsed (atomic, once per app)
+    T->>D: MarkDeviceSecretUsed (atomic, one live token per app)
     T->>T: issue access token: sub = user, client_id = child, cnf.jkt = A, act.sub = Super App
     T->>P: RecordNativeSSOConsent (consent_history, reused_from_client_id)
     T-->>C: access_token (DPoP), issued_token_type=access_token
@@ -79,7 +79,7 @@ sequenceDiagram
 - **An expired ID token is accepted.** The Native SSO session lasts as long as the device secret (24 hours by default). ID tokens live 120 seconds in eSignet, so an expired ID token is still accepted as long as its signature, issuer and binding are valid. The device secret's expiry and the server-side SSO session decide whether SSO is still allowed.
 - **Vendor boundary.** A device secret can be redeemed by the client it was minted for, or by a client that is both registered under the same `rp_id` and listed in the original client's `additional_config.native_sso_allowed_client_ids`. The same-`rp_id` rule also keeps the partner-specific user token (`sub`) consistent across the vendor's apps.
 - **Strict scopes.** Unlike plain RFC 8693, where unknown scopes are silently dropped, a Native SSO request asking for scopes beyond the original grant, or beyond what the child app is registered for, fails with `invalid_scope`.
-- **Replay protection.** Under `redemption_policy: once_per_client` (the default, following the "mark device_secret as used" step), each app can redeem a device secret once. The redemption is claimed atomically (`PutIfNotExists`), so concurrent replays lose the race. `reusable` is available for deployments that prefer a long-lived SSO session.
+- **Replay protection: one live token per app per SSO session.** Each redemption is claimed atomically (`PutIfNotExists` on `jti|client_id`), so of several concurrent replays only one wins (scenario R1). Under `redemption_policy: once_per_token_lifetime` (the default), the claim lasts as long as the access token it produced (`jwt.validity_period`, 120 s, capped at the device secret's remaining lifetime). A replay while that token is still valid fails with `invalid_grant` (A1). Once it has expired, the app signs in again silently for as long as the SSO session lasts (S1), so a user who reopens a sibling app later is not sent back to OTP. This relaxes the diagram's "mark device_secret as used" step from once per app per session to once per token lifetime. The relaxation adds little attack surface: the device secret and every token are DPoP-bound to key A, which never leaves the Super App, so a copied bundle cannot be redeemed from another device (A2), and logout ends the session for every app (L1, L2). Two other policies are available. `once_per_client` lets each app redeem a device secret once for its whole lifetime, the literal reading of the diagram; the app then needs a new Super App login after its token expires. `reusable` turns off the redemption check.
 - **Consent reuse.** Consent is checked without side effects before the redemption is claimed, and recorded only after the token is issued. Rejected or replayed exchanges leave no audit rows. A standard scope is covered when the user accepted at least one of its claims that the child is registered for; a permission scope must have been permitted. Anything else returns `interaction_required`, and the child app falls back to its own interactive login and consent.
 - **Audit trail.** Every silent sign-in appends a `consent_history` row for the child app, with the new nullable column `reused_from_client_id` naming the app whose consent was reused. `consent_detail` is left untouched because the user made no new decision. The migration is `db_upgrade_script/mosip_esignet/sql/2.0.0_to_2.1.0_upgrade.sql`.
 - **Each app gets only its own claims.** The first version passed this check but leaked data. The Child App's userinfo returned the identity system's KYC record exactly as it was issued to the Super App: `aud` was the Super App and it included `email`, although the child had only asked for `openid profile`. The exchange now gives the child its own attribute set, holding only the claims the consent provider releases (claims the child is registered for ∩ claims the user accepted ∩ claims the requested scopes release). eSignet then signs a userinfo response addressed to the child. An identity record that is encrypted to the Super App can't be narrowed, so that case returns `interaction_required`. Scenario H3 asserts the audience and the absence of email.
@@ -99,8 +99,10 @@ native_sso:
   enabled: true                       # MOSIP_ESIGNET_NATIVE_SSO_ENABLED
   device_secret_validity_secs: 86400  # MOSIP_ESIGNET_NATIVE_SSO_DEVICE_SECRET_VALIDITY_SECS
   encryption_reference_id: NATIVE_SSO # MOSIP_ESIGNET_NATIVE_SSO_ENCRYPTION_REF_ID
-  redemption_policy: once_per_client  # once_per_client | reusable
+  redemption_policy: once_per_token_lifetime  # once_per_token_lifetime | once_per_client | reusable; MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY
 ```
+
+Sessions, redemption locks and DPoP replay checks live in the runtime store. A deployment with more than one eSignet instance must set `MOSIP_ESIGNET_CACHE_TYPE=redis` so they are shared.
 
 Client registration (`POST /client-mgmt/client`). The Super App:
 
@@ -163,7 +165,7 @@ HTTP/1.1 200 OK
 | Error | When |
 |---|---|
 | `invalid_dpop_proof` | No DPoP proof (on either leg) |
-| `invalid_grant` | Invalid, tampered, expired, foreign or replayed device secret; DPoP key ≠ `cnf.jkt`; `ds_hash`/`sid`/`sub`/`aud` mismatch; original client lost `device_sso`; app outside the vendor allow-list; SSO session ended |
+| `invalid_grant` | Invalid, tampered, expired or foreign device secret, or one replayed while the app's previous token is still valid; DPoP key ≠ `cnf.jkt`; `ds_hash`/`sid`/`sub`/`aud` mismatch; original client lost `device_sso`; app outside the vendor allow-list; SSO session ended |
 | `invalid_scope` | `device_sso` on token exchange; scope beyond the original grant or the child's registration; `device_sso` for a client not registered for it; no `openid` |
 | `interaction_required` | The original consent doesn't cover the request (`error_description` lists the scopes) |
 | `invalid_request` | The device-secret type used as `subject_token_type`, the subject not an ID token, or a non-access-token `requested_token_type` |
@@ -181,9 +183,10 @@ HTTP/1.1 200 OK
 | Layer | What | Result |
 |---|---|---|
 | ThunderID unit tests | `granthandlers/native_sso_test.go`: issuance, every rejection path of the exchange, request shape, scope rules, per-client attributes, session enforcement | 57 cases pass |
-| eSignet unit tests | `device_secret_provider_test.go`, `native_sso_consent_provider_test.go`: round trip, forgery, expiry, vendor allow-list, redemption policy, session end, consent rules, audit | 43 cases pass |
+| eSignet unit tests | `device_secret_provider_test.go`, `native_sso_consent_provider_test.go`: round trip, forgery, expiry, vendor allow-list, redemption policies and lock lifetime, session end, consent rules, audit | 55 cases pass |
 | Fuzzing | `FuzzNativeSSOScopes` (ThunderID), `FuzzValidateDeviceSecret` (eSignet) | about 3.2 million inputs, no failures |
-| Mutation testing | `native-sso-lab/mutation/mutate.py` disables each of 16 security checks in turn | 16/16 caught by a test |
-| End to end | `native-sso-lab`: 20 scenarios (3 happy-path, 11 attack, 2 consent, 2 race/replay, 2 logout) against a running eSignet | 20/20 pass |
+| Mutation testing | `native-sso-lab/mutation/mutate.py` disables each of 17 security checks in turn | 17/17 caught by a test |
+| End to end | `native-sso-lab`: 21 scenarios (3 happy-path, 11 attack, 2 consent, 2 race/replay, 1 re-sign-in after token expiry, 2 logout) against a running eSignet | 21/21 pass |
+| Horizontal scaling | two instances sharing Redis behind a round-robin load balancer (`scripts/scale-test.sh` in the submission repo) | 21/21 pass; R1 across instances: 1 of 100 succeeds |
 | Postman | Native SSO folder, run by `native-sso-lab/postman/run-native-sso.sh` | 18/18 steps pass |
 | Android | Super App and Pharmacy apps on an Android 15 emulator, with the real eSignet login UI in a Custom Tab | silent SSO, consent fallback, logout cut-off and rogue-app refusal all verified |
