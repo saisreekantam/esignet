@@ -213,7 +213,7 @@ native_sso:
   enabled: true                       # override via MOSIP_ESIGNET_NATIVE_SSO_ENABLED
   device_secret_validity_secs: 86400  # override via MOSIP_ESIGNET_NATIVE_SSO_DEVICE_SECRET_VALIDITY_SECS
   encryption_reference_id: NATIVE_SSO # override via MOSIP_ESIGNET_NATIVE_SSO_ENCRYPTION_REF_ID
-  redemption_policy: once_per_client  # once_per_client | reusable; MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY
+  redemption_policy: once_per_token_lifetime  # once_per_token_lifetime | once_per_client | reusable; MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY
 
 # resource_servers declares the resource server(s) this deployment issues access tokens for.
 # identifier is the RFC 8707 `resource` request-parameter value and the token's `aud` claim.

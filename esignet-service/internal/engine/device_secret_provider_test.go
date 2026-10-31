@@ -73,10 +73,24 @@ func (f fakeClients) GetActiveClient(_ context.Context, clientID string) (client
 	return c, nil
 }
 
+// recordingStore remembers the TTL of every PutIfNotExists so tests can check how long a
+// redemption blocks the next one.
+type recordingStore struct {
+	providers.RuntimeStoreProvider
+	ttls map[string]int64
+}
+
+func (r *recordingStore) PutIfNotExists(ctx context.Context, ns providers.RuntimeStoreNamespace, key string,
+	value []byte, ttl int64) (bool, error) {
+	r.ttls[key] = ttl
+	return r.RuntimeStoreProvider.PutIfNotExists(ctx, ns, key, value, ttl)
+}
+
 type DeviceSecretProviderTestSuite struct {
 	suite.Suite
 	cfg      *config.AppConfig
 	signer   *fakeJWS
+	store    *recordingStore
 	provider *deviceSecretProvider
 	now      time.Time
 }
@@ -93,6 +107,7 @@ func (ts *DeviceSecretProviderTestSuite) SetupTest() {
 			RedemptionPolicy: config.NativeSSORedeemOncePerClient,
 		},
 	}
+	ts.cfg.JWT.ValidityPeriod = 120
 	clients := fakeClients{
 		"super": {ClientID: "super", RpID: "acme", AdditionalConfig: map[string]any{
 			NativeSSOAllowedClientsKey: []any{"child", "foreign"},
@@ -102,7 +117,8 @@ func (ts *DeviceSecretProviderTestSuite) SetupTest() {
 		"foreign":  {ClientID: "foreign", RpID: "other-vendor"},
 	}
 	ts.signer = &fakeJWS{}
-	ts.provider = newDeviceSecretProvider(ts.cfg, ts.signer, fakeJWE{}, clients, inmemory.Initialize("test"))
+	ts.store = &recordingStore{RuntimeStoreProvider: inmemory.Initialize("test"), ttls: map[string]int64{}}
+	ts.provider = newDeviceSecretProvider(ts.cfg, ts.signer, fakeJWE{}, clients, ts.store)
 	ts.now = time.Now()
 	ts.provider.now = func() time.Time { return ts.now }
 }
@@ -236,6 +252,51 @@ func (ts *DeviceSecretProviderTestSuite) TestRedeemOncePerClient() {
 	session, svcErr := ts.provider.session(context.Background(), "sid-1")
 	ts.Require().Nil(svcErr)
 	ts.Equal([]string{"child", "super"}, session.RedeemedBy)
+}
+
+func (ts *DeviceSecretProviderTestSuite) TestOncePerClientLocksForTheDeviceSecretLifetime() {
+	ds := ts.generate()
+	claims, svcErr := ts.provider.ValidateDeviceSecret(context.Background(), "child", ds.Value)
+	ts.Require().Nil(svcErr)
+	ts.Require().Nil(ts.provider.MarkDeviceSecretUsed(context.Background(), claims, "child"))
+	ts.InDelta(3600, ts.store.ttls[claims.ID+"|child"], 2)
+}
+
+func (ts *DeviceSecretProviderTestSuite) TestOncePerTokenLifetimeAllowsSignInAgainAfterExpiry() {
+	ts.cfg.NativeSSO.RedemptionPolicy = config.NativeSSORedeemOncePerTokenLifetime
+	ctx := context.Background()
+	ds := ts.generate()
+	claims, svcErr := ts.provider.ValidateDeviceSecret(ctx, "child", ds.Value)
+	ts.Require().Nil(svcErr)
+
+	ts.Require().Nil(ts.provider.MarkDeviceSecretUsed(ctx, claims, "child"))
+	ts.EqualValues(120, ts.store.ttls[claims.ID+"|child"], "the lock lasts as long as the access token")
+
+	replay := ts.provider.MarkDeviceSecretUsed(ctx, claims, "child")
+	ts.Require().NotNil(replay, "a replay while the token is live is refused")
+	ts.Equal("device_secret_already_redeemed", replay.Code)
+
+	// The access token has expired: the lock is gone and the app signs in again silently.
+	ts.Require().NoError(ts.store.Delete(ctx, nativeSSORedemptionNamespace, claims.ID+"|child"))
+	ts.Nil(ts.provider.MarkDeviceSecretUsed(ctx, claims, "child"))
+
+	session, svcErr := ts.provider.session(ctx, "sid-1")
+	ts.Require().Nil(svcErr)
+	ts.Equal([]string{"child"}, session.RedeemedBy, "a re-sign-in does not duplicate the session member")
+}
+
+func (ts *DeviceSecretProviderTestSuite) TestOncePerTokenLifetimeNeverOutlivesTheDeviceSecret() {
+	ts.cfg.NativeSSO.RedemptionPolicy = config.NativeSSORedeemOncePerTokenLifetime
+	for name, tokenTTL := range map[string]int64{"longer token": 7200, "unset token lifetime": 0} {
+		ts.Run(name, func() {
+			ts.cfg.JWT.ValidityPeriod = tokenTTL
+			ds := ts.generate()
+			claims, svcErr := ts.provider.ValidateDeviceSecret(context.Background(), "child", ds.Value)
+			ts.Require().Nil(svcErr)
+			ts.Require().Nil(ts.provider.MarkDeviceSecretUsed(context.Background(), claims, "child"))
+			ts.InDelta(3600, ts.store.ttls[claims.ID+"|child"], 2)
+		})
+	}
 }
 
 func (ts *DeviceSecretProviderTestSuite) TestReusablePolicyAllowsRepeatedRedemption() {

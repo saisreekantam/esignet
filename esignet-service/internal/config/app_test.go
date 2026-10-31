@@ -972,3 +972,28 @@ func (ts *AppConfigTestSuite) TestEnvBool() {
 		})
 	}
 }
+
+func (ts *AppConfigTestSuite) TestApplyNativeSSODefaultsRedemptionPolicy() {
+	cases := map[string]string{
+		"":                                  NativeSSORedeemOncePerTokenLifetime,
+		NativeSSORedeemOncePerTokenLifetime: NativeSSORedeemOncePerTokenLifetime,
+		NativeSSORedeemOncePerClient:        NativeSSORedeemOncePerClient,
+		NativeSSORedeemReusable:             NativeSSORedeemReusable,
+		"once-per-client":                   NativeSSORedeemOncePerTokenLifetime,
+	}
+	for configured, want := range cases {
+		ts.T().Run("policy "+configured, func(t *testing.T) {
+			t.Setenv("MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY", "")
+			c := &NativeSSOConfig{RedemptionPolicy: configured}
+			applyNativeSSODefaults(c)
+			ts.Require().Equal(want, c.RedemptionPolicy)
+		})
+	}
+
+	ts.T().Run("env override", func(t *testing.T) {
+		t.Setenv("MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY", NativeSSORedeemOncePerClient)
+		c := &NativeSSOConfig{}
+		applyNativeSSODefaults(c)
+		ts.Require().Equal(NativeSSORedeemOncePerClient, c.RedemptionPolicy)
+	})
+}

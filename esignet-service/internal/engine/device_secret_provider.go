@@ -233,8 +233,10 @@ func (p *deviceSecretProvider) ValidateDeviceSecret(ctx context.Context, clientI
 	}, nil
 }
 
-// MarkDeviceSecretUsed records that clientID redeemed the device secret. Under the
-// once_per_client policy a second redemption by the same client is rejected as a replay.
+// MarkDeviceSecretUsed records that clientID redeemed the device secret. The redemption is claimed
+// atomically on jti|client, so of several concurrent replays only one wins. The claim lasts for the
+// access token's lifetime under once_per_token_lifetime (one live token per app and session, and a
+// silent re-sign-in once it expires) and for the device secret's lifetime under once_per_client.
 func (p *deviceSecretProvider) MarkDeviceSecretUsed(ctx context.Context, claims *providers.DeviceSecretClaims,
 	clientID string) *common.ServiceError {
 	if claims == nil {
@@ -245,9 +247,9 @@ func (p *deviceSecretProvider) MarkDeviceSecretUsed(ctx context.Context, claims 
 		return nativeSSOError("device_secret_expired", "The device secret has expired")
 	}
 
-	if p.cfg.NativeSSO.RedemptionPolicy == config.NativeSSORedeemOncePerClient {
+	if lockTTL, single := p.redemptionLockTTL(ttl); single {
 		stored, err := p.store.PutIfNotExists(ctx, nativeSSORedemptionNamespace, claims.ID+"|"+clientID,
-			[]byte(p.now().UTC().Format(time.RFC3339)), ttl)
+			[]byte(p.now().UTC().Format(time.RFC3339)), lockTTL)
 		if err != nil {
 			p.logger.Error(ctx, "Failed to record device secret redemption", applog.Error(err))
 			return shared.InternalServerError
@@ -274,6 +276,23 @@ func (p *deviceSecretProvider) MarkDeviceSecretUsed(ctx context.Context, claims 
 	p.logger.Info(ctx, "Native SSO device secret redeemed", applog.String("clientId", clientID),
 		applog.String("originalClientId", claims.ClientID), applog.String("sid", claims.SessionID))
 	return nil
+}
+
+// redemptionLockTTL returns how long a redemption by one client blocks the next one, and false
+// when the policy does not limit redemptions. secretTTL is the device secret's remaining lifetime.
+func (p *deviceSecretProvider) redemptionLockTTL(secretTTL int64) (int64, bool) {
+	switch p.cfg.NativeSSO.RedemptionPolicy {
+	case config.NativeSSORedeemReusable:
+		return 0, false
+	case config.NativeSSORedeemOncePerClient:
+		return secretTTL, true
+	default:
+		tokenTTL := p.cfg.JWT.ValidityPeriod
+		if tokenTTL <= 0 || tokenTTL > secretTTL {
+			tokenTTL = secretTTL
+		}
+		return tokenTTL, true
+	}
 }
 
 // IsSessionActive reports whether the SSO session sid is still open.

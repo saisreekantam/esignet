@@ -127,6 +127,10 @@ type AppConfig struct {
 
 // Native SSO device secret redemption policies.
 const (
+	// NativeSSORedeemOncePerTokenLifetime lets each app hold one live token per SSO session: a
+	// redemption is refused while the app's previous access token is still valid, and allowed
+	// again once it has expired, for as long as the session lasts.
+	NativeSSORedeemOncePerTokenLifetime = "once_per_token_lifetime"
 	// NativeSSORedeemOncePerClient lets each app redeem a given device secret once, so a captured
 	// device secret and ID token cannot be replayed by the same app.
 	NativeSSORedeemOncePerClient = "once_per_client"
@@ -143,7 +147,8 @@ type NativeSSOConfig struct {
 	// EncryptionReferenceID is the keymanager reference id of the key device secrets are
 	// encrypted with (a Component Encryption Key under the OIDC service application id).
 	EncryptionReferenceID string `yaml:"encryption_reference_id"`
-	// RedemptionPolicy is NativeSSORedeemOncePerClient or NativeSSORedeemReusable.
+	// RedemptionPolicy is NativeSSORedeemOncePerTokenLifetime (the default),
+	// NativeSSORedeemOncePerClient or NativeSSORedeemReusable.
 	RedemptionPolicy string `yaml:"redemption_policy"`
 }
 
@@ -798,8 +803,12 @@ func applyNativeSSODefaults(c *NativeSSOConfig) {
 	c.EncryptionReferenceID = envOrConfigOrDefault("MOSIP_ESIGNET_NATIVE_SSO_ENCRYPTION_REF_ID",
 		c.EncryptionReferenceID, defaultNativeSSOEncryptionRefID)
 	c.RedemptionPolicy = envOrConfigOrDefault("MOSIP_ESIGNET_NATIVE_SSO_REDEMPTION_POLICY",
-		c.RedemptionPolicy, NativeSSORedeemOncePerClient)
-	if c.RedemptionPolicy != NativeSSORedeemReusable {
-		c.RedemptionPolicy = NativeSSORedeemOncePerClient
+		c.RedemptionPolicy, NativeSSORedeemOncePerTokenLifetime)
+	switch c.RedemptionPolicy {
+	case NativeSSORedeemOncePerTokenLifetime, NativeSSORedeemOncePerClient, NativeSSORedeemReusable:
+	default:
+		applog.GetLogger().Warn(context.Background(), "unknown Native SSO redemption policy; using the default",
+			applog.String("policy", c.RedemptionPolicy))
+		c.RedemptionPolicy = NativeSSORedeemOncePerTokenLifetime
 	}
 }
